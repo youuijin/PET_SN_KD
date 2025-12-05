@@ -1,1 +1,2 @@
-# MR-less PET Spatial Normalization using KD
+# MR-less PET Spatial Normalization using Cross-modal Knowledge Distillation
+

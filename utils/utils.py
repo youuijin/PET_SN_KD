@@ -1,0 +1,401 @@
+import torch, random
+import torch.nn.functional as F
+import numpy as np
+import nibabel as nib
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+from scipy.interpolate import splprep, splev
+
+def set_seed(seed=0):
+    """
+    Set seed before training
+
+    Parameters:
+    - seed: selected seed (int)
+    """
+    random.seed(seed) 
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+# Apply deformation into image
+def normalize_deformation(disp_field):
+    """
+    Normalize deformation field: [-Size, Size] -> [-1, 1]
+
+    Parameters:
+    - disp_field: 3D displacement field (torch.Tensor) (shape: B, 3, D, H, W)
+    """
+    D, H, W = disp_field.shape[2:]
+
+    norm_disp = torch.zeros_like(disp_field)
+    # use N-1 because of align_corner = True
+    norm_disp[:, 0] = disp_field[:, 0] / ((W-1) / 2)
+    norm_disp[:, 1] = disp_field[:, 1] / ((H-1) / 2)
+    norm_disp[:, 2] = disp_field[:, 2] / ((D-1) / 2)
+
+    return norm_disp
+
+def apply_deformation_using_disp(img, displace_field, mode='bilinear'):
+    """
+    Deform image using displacement field (need to add identity matrix)
+
+    Parameters:
+    - img: to be transformed (torch.Tensor) (shape: B, 1, D, H, W)
+    - displace_field: 3D displacement field (torch.Tensor) (shape: B, 3, D, H, W)
+        x : W, y : H, z : D
+    - mode: interpolation mode, ['bilinear', 'nearest']
+    """
+    assert mode in ['bilinear', 'nearest']
+
+    B, _, D, H, W = img.shape
+    
+    # Generate normalized grid (-1, 1)
+    d = torch.linspace(-1, 1, D)
+    h = torch.linspace(-1, 1, H)
+    w = torch.linspace(-1, 1, W)
+    grid_d, grid_h, grid_w = torch.meshgrid(d, h, w, indexing='ij')
+    grid = torch.stack((grid_w, grid_h, grid_d), dim=0) # (3, D, H, W)
+    grid = grid.unsqueeze(0).repeat(B, 1, 1, 1, 1).to(img.device) # (B, 3, D, H, W)
+
+    # Apply deformation
+    normalized_disp = normalize_deformation(displace_field)
+
+    deformed_grid = grid + normalized_disp
+
+    # Reshape grid to match F.grid_sample requirements (B, D, H, W, 3)
+    deformed_grid = deformed_grid.permute(0, 2, 3, 4, 1)
+
+    # Perform deformation
+    deformed_img = F.grid_sample(img, deformed_grid, mode=mode, padding_mode='border', align_corners=True)
+
+    return deformed_img
+
+def apply_deformation(img, deformation_field, mode='bilinear'):
+    """
+    Deform image using deformation field
+
+    Parameters:
+    - img: to be transformed (torch.Tensor) (shape: B, 1, D, H, W)
+    - deformation_field: 3D deformation field (torch.Tensor) (shape: B, 3, D, H, W)
+        x : W, y : H, z : D
+    - mode: interpolation mode, ['bilinear', 'nearest']
+    """
+    assert mode in ['bilinear', 'nearest']
+
+    B, _, D, H, W = img.shape
+
+    # Using another normalization
+    deformed_grid = torch.empty_like(deformation_field)
+    # deformed_grid[:, 0] = 2 * (deformation_field[:, 0] / (W - 1) - 0.5)
+    # deformed_grid[:, 1] = 2 * (deformation_field[:, 1] / (H - 1) - 0.5)
+    # deformed_grid[:, 2] = 2 * (deformation_field[:, 2] / (D - 1) - 0.5)
+
+    # Reshape grid to match F.grid_sample requirements (B, D, H, W, 3)
+    deformed_grid = deformed_grid.permute(0, 2, 3, 4, 1)
+
+    # Perform deformation
+    deformed_img = F.grid_sample(img, deformed_grid, mode=mode, padding_mode='border', align_corners=True)
+
+    return deformed_img
+
+# Save 3D or 2D image
+def save_disp_RGB(disp_field, output_path, affine):
+    """
+    Save displacement field into RGB colored image
+
+    Parameters:
+    - disp_field: 3D displacement field (torch.Tensor) (shape: 1, 3, D, H, W)
+    - output_path: save nifti file path (str)
+    - affine: affine matrix to save nii format (shape: 4, 4)
+    """
+    disp_field = disp_field[0] # select first one of batch
+    
+    if not isinstance(disp_field, np.ndarray):
+        if isinstance(disp_field, torch.Tensor):
+            disp_field = disp_field.detach().cpu().numpy()
+        else:
+            disp_field = np.array(disp_field)
+    disp_field = disp_field.squeeze()
+    if disp_field.shape[-1] != 3:
+        disp_field = np.transpose(disp_field, (1, 2, 3, 0))
+
+    # displacement field: (X, Y, Z, 3)
+
+    # abs (only magnitude)
+    disp_field = np.abs(disp_field)
+
+    # 정규화 및 uint8 변환
+    disp_field_min = disp_field.min(axis=(0,1,2), keepdims=True)
+    disp_field_max = disp_field.max(axis=(0,1,2), keepdims=True)
+    disp_field_norm = ((disp_field - disp_field_min) / (disp_field_max - disp_field_min + 1e-8))
+
+    rgb_data = disp_field_norm[..., np.newaxis, :]  # shape: (X, Y, Z, 1, 3)
+    rgb_data = rgb_data.astype(np.float32)
+
+    hdr = nib.nifti1.Nifti1Header()
+    hdr.set_data_dtype(np.float32)       # header datatype
+    hdr['dim'] = [5, 192, 224, 192, 1, 3, 1, 1]  # 정확히 맞추기
+    hdr['intent_code'] = 1007            # NIFTI_INTENT_VECTOR
+
+    nii_img = nib.Nifti1Image(rgb_data, affine=affine, header=hdr)
+    nib.save(nii_img, output_path)
+
+def denormalize_image(normalized_img, img_min, img_max):
+    """
+    Denormalize: [0, 1] -> [img_min, img_max]
+
+    Parameters:
+    - normalized_img: 3D tensor in [0, 1] (torch.Tensor) (shape: B, 1, D, H, W)
+    - img_min, img_max: original min, max to denormalize (shape: B, 1)
+    """
+    img_min, img_max = img_min.to(normalized_img.device), img_max.to(normalized_img.device)
+    return normalized_img * (img_max - img_min) + img_min
+
+def save_deformed_image_nii(deformed_tensor, output_path, img_min, img_max, affine):
+    """
+    Save deformed tensor image to .nii.gz format
+
+    Parameters:
+    - deformed_tensor: 3D tensor (torch.Tensor) (shape: 1, 1, D, H, W)
+    - output_path: save nifti file path (str)
+    - img_min, img_max: original min, max to denormalize (shape: B, 1)
+    - affine: affine matrix to save nii format (shape: 4, 4)
+    """
+    # 1. convert tensor to numpy
+    deformed_tensor = denormalize_image(deformed_tensor, img_min, img_max)
+    deformed_img = deformed_tensor.squeeze().cpu().detach().numpy()
+
+    # 4. 새로운 NIfTI 객체 생성 및 저장
+    deformed_nifti = nib.Nifti1Image(deformed_img, affine=affine)
+    nib.save(deformed_nifti, output_path)
+    
+
+# save images
+def transform_slice(img):
+    # apply 90-degree CCW rotation + horizontal flip
+    return np.fliplr(np.rot90(img, k=1))
+    
+def save_middle_slices(img_3d, epoch, idx):
+    """
+    img_3d: [D, H, W] or [1, D, H, W] or [B, 1, D, H, W] (e.g., torch.Tensor)
+    Returns: matplotlib Figure with x, y, z middle slices side-by-side
+    """
+    img_3d = img_3d.squeeze().detach().cpu().numpy()
+
+    D, H, W = img_3d.shape
+
+    slice_x = transform_slice(img_3d[D // 2, :, :])
+    slice_y = transform_slice(img_3d[:, H // 2, :])
+    slice_z = transform_slice(img_3d[:, :, W // 2])
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axes[0].imshow(slice_z, cmap='gray')
+    axes[0].set_title('Axial (X)')
+    axes[1].imshow(slice_y, cmap='gray')
+    axes[1].set_title('Coronal (Y)')
+    axes[2].imshow(slice_x, cmap='gray')
+    axes[2].set_title('Sagittal (Z)')
+
+    for ax in axes:
+        ax.axis('off')
+
+    plt.tight_layout()
+
+    return fig
+
+def save_middle_slices_mfm(moving, fixed, moved, epoch, idx):
+    """
+    img_3d: [D, H, W] or [1, D, H, W] or [B, 1, D, H, W] (e.g., torch.Tensor)
+    Returns: matplotlib Figure with x, y, z middle slices side-by-side
+    """
+    def get_slices(img):
+        img = img.squeeze().detach().cpu().numpy()
+        D, H, W = img.shape
+        return [
+            transform_slice(img[D // 2, :, :]),  # axial (x)
+            transform_slice(img[:, H // 2, :]),  # coronal (y)
+            transform_slice(img[:, :, W // 2]),  # sagittal (z)
+        ]
+    
+    slices_moving = get_slices(moving)
+    slices_fixed = get_slices(fixed)
+    slices_moved = get_slices(moved)
+    
+    titles = ['Axial (X)', 'Coronal (Y)', 'Sagittal (Z)']
+    labels = ['Moving', 'Fixed', 'Moved']
+
+    fig, axes = plt.subplots(3, 3, figsize=(12, 10))
+
+    for row in range(3):
+        for col, slices in enumerate([slices_moving, slices_fixed, slices_moved]):
+            axes[row, col].imshow(slices[row], cmap='gray')
+            axes[row, col].axis('off')
+            if row == 0:
+                axes[row, col].set_title(labels[col], fontsize=12)
+        # 왼쪽 row label
+        axes[row, 0].text(-0.2, 0.5, titles[row], va='center', ha='right',
+                          rotation=90, transform=axes[row, 0].transAxes, fontsize=12)
+
+    plt.suptitle(f'Middle slices at Epoch {epoch}, Sample {idx}', fontsize=14)
+    plt.tight_layout()
+    return fig
+
+def print_with_timestamp(string=""):
+    timestamp = (datetime.now() + timedelta(hours=9)).strftime("[%Y-%m-%d %H:%M:%S]")
+    print(timestamp, string)
+
+def save_grid_spline(disp, smoothness=0):
+    """
+    B-spline으로 부드러운 변형 grid 시각화
+    data: (Z, Y, X, 3) 또는 마지막 차원이 3이 아닌 경우 (3, Z, Y, X)로 가정
+    """
+    data = disp[0].cpu()
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axis_order = ['x', 'y', 'z']
+    for k, slice_axis in enumerate(axis_order):
+        ax = axes[k]
+        # 1) torch.Tensor -> numpy 로 강제 변환
+        if hasattr(data, "detach"):         # torch.Tensor인 경우
+            data = data.detach().cpu().numpy()
+        else:
+            data = np.asarray(data)         # 그 외 배열류 안전 변환
+        # data shape 정규화: (Z, Y, X, 3)
+        if data.shape[-1] != 3:
+            # 흔한 케이스: (3, Z, Y, X) -> (Z, Y, X, 3)
+            if data.shape[0] == 3:
+                data = np.moveaxis(data, 0, -1)
+            else:
+                data = np.transpose(data, (1, 2, 3, 0))
+
+        Z, Y, X, _ = data.shape
+
+        # 슬라이스 인덱스 안전 처리
+        if slice_axis == 'z':
+            slice_index = Z // 2
+        elif slice_axis == 'y':
+            slice_index = Y // 2
+        elif slice_axis == 'x':
+            slice_index = X // 2
+        else:
+            raise ValueError("slice_axis must be one of 'x', 'y', or 'z'")
+
+        # 슬라이스 추출 & (행,열,3) = (H,W,3) 형태로 명시적 구성
+        if slice_axis == 'z':      # 평면: X–Y
+            disp = data[slice_index, :, :, :]        # (Y, X, 3)
+            H, W = Y, X
+            dx, dy = disp[:, :, 0], disp[:, :, 1]
+
+        elif slice_axis == 'y':    # 평면: X–Z
+            disp = data[:, slice_index, :, :]        # (Z, X, 3)
+            H, W = Z, X
+            dx, dy = disp[:, :, 0], disp[:, :, 2]
+
+        elif slice_axis == 'x':    # 평면: Y–Z
+            disp = data[:, :, slice_index, :]        # (Z, Y, 3)
+            H, W = Z, Y
+            dx, dy = disp[:, :, 1], disp[:, :, 2]
+
+        else:
+            raise ValueError("slice_axis must be one of 'x', 'y', or 'z'")
+
+
+        # 배열 인덱싱과 일치하도록 ij 인덱싱 사용
+        grid_y, grid_x = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+        warped_x = grid_x + dx
+        warped_y = grid_y + dy
+
+        # num_lines 반영 (가로/세로 각 num_lines)
+        row_indices = np.linspace(0, H - 1, num=H//2, dtype=int)
+        col_indices = np.linspace(0, W - 1, num=W//2, dtype=int)
+
+        # 가로선
+        for i in row_indices:
+            x_line = warped_x[i, :]
+            y_line = warped_y[i, :]
+            sx, sy = spline_line(x_line, y_line, smoothness)
+            # ax.plot(sx, sy, 'r-')
+            xr, yr = _rot90ccw_flip_lr(sx, sy, H, W)
+            ax.plot(xr, yr, 'r-', linewidth=0.8)
+
+        # 세로선
+        for j in col_indices:
+            x_line = warped_x[:, j]
+            y_line = warped_y[:, j]
+            sx, sy = spline_line(x_line, y_line, smoothness)
+            # ax.plot(sx, sy, 'r-') # 원본 그대로
+            xr, yr = _rot90ccw_flip_lr(sx, sy, H, W)
+            ax.plot(xr, yr, 'r-', linewidth=0.8)
+
+        ax.invert_yaxis()  # 이미지 좌표계 일치
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(f"{slice_axis.upper()}-slice @ {slice_index}")
+
+    fig.tight_layout(pad=0.1, w_pad=0.05, h_pad=0.05)
+
+    return fig
+
+def _rot90ccw_flip_lr(x, y, H, W):
+    xr = (H - 1) - y
+    yr = (W - 1) - x
+    return xr, yr
+
+def spline_line(x, y, smoothness=0, num_points=100):
+    """주어진 점들을 spline으로 부드럽게 연결"""
+    tck, _ = splprep([x, y], s=smoothness)
+    new_points = splev(np.linspace(0, 1, num_points), tck)
+    return new_points[0], new_points[1]
+
+def add_identity_to_deformation(deformation_field):
+    D, H, W, _ = deformation_field.shape
+    identity = np.stack(np.meshgrid(
+        np.arange(D), np.arange(H), np.arange(W), indexing='ij'), axis=-1)
+    return deformation_field + identity
+
+# --- 2. Jacobian Determinant 계산 ---
+def compute_jacobian_determinant(displacement_field):
+    """
+    변형장의 Jacobian Determinant를 계산하여 반환
+    displacement_field: (X, Y, Z, 3) 형태의 변형장 (displacement field를 의미)
+    """
+    displacement_field = displacement_field.squeeze(0).detach().cpu().numpy()
+    if displacement_field.shape[-1] !=3:
+        displacement_field = np.transpose(displacement_field, (1, 2, 3, 0)) # (X, Y, Z, 3)
+
+    def_voxel = displacement_field.copy()
+    deformation_field = add_identity_to_deformation(def_voxel)
+
+    dx = np.gradient(deformation_field[..., 0], axis=0)  # dφ_x/dx
+    dy = np.gradient(deformation_field[..., 0], axis=1)  # dφ_x/dy
+    dz = np.gradient(deformation_field[..., 0], axis=2)  # dφ_x/dz
+
+    ex = np.gradient(deformation_field[..., 1], axis=0)  # dφ_y/dx
+    ey = np.gradient(deformation_field[..., 1], axis=1)  # dφ_y/dy
+    ez = np.gradient(deformation_field[..., 1], axis=2)  # dφ_y/dz
+
+    fx = np.gradient(deformation_field[..., 2], axis=0)  # dφ_z/dx
+    fy = np.gradient(deformation_field[..., 2], axis=1)  # dφ_z/dy
+    fz = np.gradient(deformation_field[..., 2], axis=2)  # dφ_z/dz
+
+    # Jacobian 행렬 구성
+    jacobian = np.zeros(deformation_field.shape[:-1] + (3, 3))
+    jacobian[..., 0, 0] = dx
+    jacobian[..., 0, 1] = dy
+    jacobian[..., 0, 2] = dz
+
+    jacobian[..., 1, 0] = ex
+    jacobian[..., 1, 1] = ey
+    jacobian[..., 1, 2] = ez
+
+    jacobian[..., 2, 0] = fx
+    jacobian[..., 2, 1] = fy
+    jacobian[..., 2, 2] = fz
+
+    # # Determinant 계산
+    jacobian_det = np.linalg.det(jacobian)
+    return jacobian_det
