@@ -1,9 +1,10 @@
 import argparse
 from pyprnt import prnt
 from utils.trainer_utils import set_trainer
-from utils.utils import print_with_timestamp
+from utils.utils import print_with_timestamp, set_seed
 
 def main(args):
+    set_seed(0)
     trainer = set_trainer(args)
     print_with_timestamp(f"Start training: {trainer.log_name}")
     

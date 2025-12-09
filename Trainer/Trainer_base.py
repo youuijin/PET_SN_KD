@@ -47,7 +47,7 @@ class Trainer_base:
         self.T_model = self.T_model.cuda()
         self.T_model.eval()
 
-        self.train_loader, self.val_loader, self.save_loader = set_dataloader_usingcsv(args.dataset, 'data/data_list', ['data/FDG_MRI_numpy', 'data/FDG_PET_percent_numpy'], args.template_path, args.batch_size, numpy=args.numpy, transform=args.transform)
+        self.train_loader, self.val_loader, self.save_loader = set_dataloader_usingcsv(args.dataset, 'data/data_list', ['data/FDG_MRI_percent_numpy', 'data/FDG_PET_percent_numpy'], args.template_path, args.batch_size, numpy=args.numpy, transform=args.transform)
         self.save_dir = f'./results/saved_models/{args.dataset}/{args.model}'
         
         os.makedirs(f'{self.save_dir}/completed', exist_ok=True)

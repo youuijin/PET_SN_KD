@@ -61,8 +61,8 @@ class MedicalImageDatasetCSV(Dataset):
     
     def __getitem__(self, idx):
         if self.numpy:
-            MRI = np.load(self.MRI_paths[idx])
-            PET = np.load(self.PET_paths[idx])
+            MRI = np.load(self.MRI_paths[idx]).astype(np.float32)
+            PET = np.load(self.PET_paths[idx]).astype(np.float32)
             affine = np.load('data/affine.npy')
         else:
             MRI = nib.load(self.MRI_paths[idx]).get_fdata().astype(np.float32)
