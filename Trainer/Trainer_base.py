@@ -35,8 +35,11 @@ class Trainer_base:
         
         # Setting Model
         self.S_model = set_model(args.model, in_channels=1, out_channels=3, out_layers=1) # basic model (VM)
-        # if args.pretrained_path is not None:
-        #     self.S_model.load_state_dict(torch.load(args.pretrained_path, weights_only=True,map_location=torch.device('cpu')))
+        if args.pretrained_path is not None:
+            self.S_model.load_state_dict(torch.load(args.pretrained_path, weights_only=True, map_location=torch.device('cpu')))
+            self.start_epoch = args.start_epoch
+        else:
+            self.start_epoch = 0
         self.S_model = self.S_model.cuda()
         
         self.T_model = set_model(args.teacher_model, in_channels=2, out_channels=3, out_layers=1) # basic model (VM)
@@ -61,7 +64,7 @@ class Trainer_base:
 
     def train(self):
         best_loss = 1e+9
-        for epoch in range(0, self.epochs):
+        for epoch in range(self.start_epoch, self.epochs):
             self.train_1_epoch(epoch)
             if epoch % self.val_interval == 0:
                 with torch.no_grad():

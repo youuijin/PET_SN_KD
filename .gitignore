@@ -1,2 +1,4 @@
 data/
-teacher_models
+logs/
+results/
+*/__pycache__/*

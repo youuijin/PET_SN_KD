@@ -26,6 +26,8 @@ if __name__ == "__main__":
 
     # Student - PET Spatial Normalization
     ## training options 
+    parser.add_argument("--pretrained_path", type=str, default=None)
+    parser.add_argument("--start_epoch", type=int, default=0)
     parser.add_argument("--KD", type=str, choices=['none', 'field', 'feature'], default='field')
     parser.add_argument("--epochs", type=int, default=400)
     parser.add_argument("--seed", type=int, default=0)
