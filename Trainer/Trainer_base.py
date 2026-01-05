@@ -24,9 +24,6 @@ class Trainer_base:
         if args.lr_scheduler == 'multistep':
             self.log_name = f'{self.log_name}_sche(multi_{args.lr_milestones})'
         
-        if args.transform:
-            self.log_name = f'{self.log_name}_aug'
-
         # add start time
         now = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m-%d_%H-%M")
         self.log_name = f'{self.log_name}_{now}'
@@ -41,13 +38,14 @@ class Trainer_base:
         else:
             self.start_epoch = 0
         self.S_model = self.S_model.cuda()
-        
-        self.T_model = set_model(args.teacher_model, in_channels=2, out_channels=3, out_layers=1) # basic model (VM)
-        self.T_model.load_state_dict(torch.load(args.teacher_path, weights_only=True,map_location=torch.device('cpu')))
-        self.T_model = self.T_model.cuda()
-        self.T_model.eval()
 
-        self.train_loader, self.val_loader, self.save_loader = set_dataloader_usingcsv(args.dataset, 'data/data_list', ['data/FDG_MRI_percent_numpy', 'data/FDG_PET_percent_numpy'], args.template_path, args.batch_size, numpy=args.numpy, transform=args.transform)
+        if args.KD != 'None':
+            self.T_model = set_model(args.teacher_model, in_channels=2, out_channels=3, out_layers=1) # basic model (VM)
+            self.T_model.load_state_dict(torch.load(args.teacher_path, weights_only=True,map_location=torch.device('cpu')))
+            self.T_model = self.T_model.cuda()
+            self.T_model.eval()
+
+        self.train_loader, self.val_loader, self.save_loader = set_dataloader_usingcsv(args.dataset, 'data/data_list', ['data/FDG_MRI_percent_numpy', 'data/FDG_PET_percent_numpy'], args.template_path, args.batch_size, numpy=args.numpy, transform=False)
         self.save_dir = f'./results/saved_models/{args.dataset}/{args.model}'
         
         os.makedirs(f'{self.save_dir}/completed', exist_ok=True)
@@ -134,15 +132,24 @@ class Trainer_base:
             
             # forward & calculate loss in child trainer
             _, deformed_pet, deformed_segs = self.forward(MRI, MRI_template, PET, img_segs, temp_segs, epoch)
-            t_disp, s_disp = self.get_disp()
+            if self.args.KD != 'None':
+                t_disp, s_disp = self.get_disp()
+            else:
+                s_disp = self.get_disp()
 
             fig = save_middle_slices_mfm(MRI_template, PET, deformed_pet, epoch, idx)
             self.writer.add_figure(f'deformed_PET(s_disp)_img{idx}', fig, epoch)
             plt.close(fig)
 
-            deformed_MRI = apply_deformation_using_disp(MRI, t_disp)
+            if self.args.KD != 'None':
+                deformed_MRI = apply_deformation_using_disp(MRI, t_disp)
+                fig = save_middle_slices_mfm(MRI_template, MRI, deformed_MRI, epoch, idx)
+                self.writer.add_figure(f'deformed_MRI(t_disp)_img{idx}', fig, epoch)
+                plt.close(fig)
+                
+            deformed_MRI = apply_deformation_using_disp(MRI, s_disp)
             fig = save_middle_slices_mfm(MRI_template, MRI, deformed_MRI, epoch, idx)
-            self.writer.add_figure(f'deformed_MRI(t_disp)_img{idx}', fig, epoch)
+            self.writer.add_figure(f'deformed_MRI(s_disp)_img{idx}', fig, epoch)
             plt.close(fig)
             
             for name, (img_seg, temp_seg, deformed_seg) in enumerate(zip(img_segs, temp_segs, deformed_segs)):
@@ -154,9 +161,10 @@ class Trainer_base:
             self.writer.add_figure(f's_disp_{idx}', fig, epoch)
             plt.close(fig)
 
-            fig = save_grid_spline(t_disp)
-            self.writer.add_figure(f't_disp_{idx}', fig, epoch)
-            plt.close(fig)
+            if self.args.KD != 'None':
+                fig = save_grid_spline(t_disp)
+                self.writer.add_figure(f't_disp_{idx}', fig, epoch)
+                plt.close(fig)
 
         print_with_timestamp(f'Epoch {epoch}: Successfully saved {num} images')
 

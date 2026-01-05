@@ -29,8 +29,8 @@ if __name__ == "__main__":
     ## training options 
     parser.add_argument("--pretrained_path", type=str, default=None)
     parser.add_argument("--start_epoch", type=int, default=0)
-    parser.add_argument("--KD", type=str, choices=['none', 'field', 'feature'], default='field')
-    parser.add_argument("--epochs", type=int, default=400)
+    parser.add_argument("--KD", type=str, choices=['None', 'field', 'feature'], default='field')
+    parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--numpy", action='store_true', default=False)
@@ -42,18 +42,17 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default='SNUH', choices=['DLBS', 'OASIS', 'LUMIR', 'SNUH'])
 
     ## loss
-    # parser.add_argument("--loss", type=str, default="MSE", choices=['NCC', 'MSE', 'LNCC'])
-    
     parser.add_argument("--data_aug", action='store_true', default=False)
     parser.add_argument("--data_aug_geo", action='store_true', default=False)
     
     # for regularizer
-    # parser.add_argument("--reg", type=str, default=None)
-    # parser.add_argument("--alpha", type=str, default=None)
-    # parser.add_argument("--p", type=float, default=0.0)
-    # parser.add_argument("--alp_sca", type=float, default=1.0)
-    # parser.add_argument("--sca_fn", type=str, default='exp', choices=['exp', 'linear'])
-    parser.add_argument("--transform", action='store_true', default=False) # TODO: Delete
+    ## NON-KD
+    parser.add_argument("--sim_loss", type=str, default='None', choices=['None', 'MSE', 'NCC'])
+    parser.add_argument("--alpha_tv", type=float, default=1.0)
+    parser.add_argument("--alpha_dice", type=float, default=1.0)
+    parser.add_argument("--alpha_suvr", type=float, default=1.0)
+
+    ## KD field loss
     parser.add_argument("--lamb", type=float, default=0.2)
 
     # for uncertainty
@@ -77,6 +76,16 @@ if __name__ == "__main__":
     parser.add_argument("--log_dir", type=str, default='logs')
 
     args = parser.parse_args()
+
+    import os
+    os.environ["OMP_NUM_THREADS"] = "4"
+    os.environ["MKL_NUM_THREADS"] = "4"
+    os.environ["OPENBLAS_NUM_THREADS"] = "4"
+    os.environ["NUMEXPR_NUM_THREADS"] = "4"
+
+    import torch
+    torch.set_num_threads(4)
+    torch.set_num_interop_threads(2)
 
     main(args)
 
