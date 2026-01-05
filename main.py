@@ -36,7 +36,7 @@ if __name__ == "__main__":
     parser.add_argument("--numpy", action='store_true', default=False)
 
     ## model
-    parser.add_argument("--model", type=str, default='U_Net', choices=['U_Net', 'Mid_U_Net', 'Big_U_Net'])
+    parser.add_argument("--model", type=str, default='U_Net', choices=['U_Net', 'Mid_U_Net', 'Big_U_Net', 'Tiny_U_Net'])
 
     ## dataset
     parser.add_argument("--dataset", type=str, default='SNUH', choices=['DLBS', 'OASIS', 'LUMIR', 'SNUH'])
